@@ -4,8 +4,10 @@ import json
 import os
 import re
 
-TOKEN = "8731984361:AAGg1sEdU-9mYPABTCd6BxOS-UAZyOk5vgQ"
-ADMIN_ID = 2136162953  # o'zingning telegram ID'ingni yoz
+
+
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 bot = telebot.TeleBot(TOKEN)
 
