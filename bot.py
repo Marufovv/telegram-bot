@@ -1,15 +1,21 @@
+import os
+import json
+import re
 import telebot
 from telebot import types
-import json
-import os
-import re
-
-
+from flask import Flask, request
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN topilmadi")
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL topilmadi")
 
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE = os.path.join(BASE_DIR, "users.json")
@@ -18,30 +24,30 @@ REFERAT_FOLDER = os.path.join(BASE_DIR, "referatlar")
 topic_names = {
     "1": "Ilk diniy tasavvurlar va ularning zamonaviy dinlarni rivojlantirishdagi ahamiyati",
     "2": "“Avesto” - zardushtiylikning mukaddas manbasi",
-    "3": "Yaxudiylik dinining xususiyatlari. Dinning ijtimoiy xayotdagi o‘rni",
-    "4": "Xinduiylikdagi uchlik (trimurti) xudolari",
+    "3": "Yahudiylik dinining xususiyatlari. Dinning ijtimoiy hayotdagi o‘rni",
+    "4": "Hinduiylikdagi uchlik (trimurti) xudolari",
     "5": "Zardushtiylikning vujudga kelishi",
-    "6": "Islomdagi mazxablar",
+    "6": "Islomdagi mazhablar",
     "7": "Xristianlik manbalari",
-    "8": "Milliy dinlar: yaxudiylik",
+    "8": "Milliy dinlar: yahudiylik",
     "9": "Kibermakonda din omilining ijtimoiy xavfi",
     "10": "Diniylik va dunyoviylik muammosi",
     "11": "Globallashuv va din",
     "12": "Missionerlik va prozelitizm: tarix va bugun, targ‘ibot usullari",
     "13": "Tasavvuf ta’limoti va tariqatlari",
     "14": "Islomning vujudga kelishi va tarqalishi",
-    "15": "Milliy dinlar: daotsizm va konfutsiylik",
+    "15": "Milliy dinlar: daosizm va konfutsiylik",
     "16": "Xristianlikdagi oqimlar",
-    "17": "Buddizmni jaxon diniga aylanishi omillari",
+    "17": "Buddizmni jahon diniga aylanishi omillari",
     "18": "Yangi diniy harakatlar va sektalar",
     "19": "Milliy dinlar: sintoizm",
-    "20": "Diniy ekstremizm va terrorizmga karshi kurash: O’zbekiston tajribasi",
+    "20": "Diniy ekstremizm va terrorizmga qarshi kurash: O‘zbekiston tajribasi",
     "21": "Qur’on Sharq xalqlarining diniy, ilmiy va ma’naviy merosi sifatida",
     "22": "Axborotlashgan jamiyatda ekstremistik targ‘ibotning ijtimoiy xavfining ortib borishi",
-    "23": "Xadislarda milliy va diniy qadriyatlarning aks etishi",
-    "24": "O’zbekistonda vijdon erkinligi",
+    "23": "Hadislarda milliy va diniy qadriyatlarning aks etishi",
+    "24": "O‘zbekistonda vijdon erkinligi",
     "25": "Qadimgi Yunon va Misr xudolari",
-    "26": "Xristianlik jaxon dini"
+    "26": "Xristianlik jahon dini"
 }
 
 
@@ -50,7 +56,7 @@ def load_users():
         try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
     return {}
 
@@ -146,6 +152,8 @@ def start_handler(message):
 
         bot.send_message(
             message.chat.id,
+            "🎓 Assalomu alaykum!\n\n"
+            "Ushbu bot orqali dinshunoslik fanidan mavzular va referatlarni olishingiz mumkin.\n\n"
             "Botdan foydalanish uchun avval telefon raqamingizni yuboring.\n\n"
             "Format: +998XXXXXXXXX\n"
             "yoki pastdagi tugma orqali yuboring.",
@@ -337,19 +345,24 @@ def text_handler(message):
         )
 
 
-print("Bot ishga tushdi...")
-bot.infinity_polling()
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot ishlayapti!", 200
 
-@bot.message_handler(commands=['start'])
-def start_handler(message):
-    text = (
-        "🎓 Assalomu alaykum!\n\n"
-        "Ushbu bot orqali siz dinshunoslik fanidan kerakli mavzular va referatlarni olishingiz mumkin.\n\n"
-        "📚 Bot imkoniyatlari:\n"
-        "• 26 ta mavzu\n"
-        "• Har bir mavzu bo‘yicha referat\n"
-        "• Qulay menyu\n"
-        "• Telefon raqam orqali ro‘yxatdan o‘tish\n\n"
-        "Davom etish uchun telefon raqamingizni yuboring."
-    )
-    bot.send_message(message.chat.id, text, reply_markup=make_phone_button())
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "OK", 200
+    return "Invalid request", 403
+
+
+if __name__ == "__main__":
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    print("Webhook o‘rnatildi")
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
