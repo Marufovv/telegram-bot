@@ -1,6 +1,6 @@
 import os
-import json
 import re
+import sqlite3
 import telebot
 from telebot import types
 from flask import Flask, request
@@ -18,8 +18,9 @@ bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USERS_FILE = os.path.join(BASE_DIR, "users.json")
 REFERAT_FOLDER = os.path.join(BASE_DIR, "referatlar")
+DB_PATH = os.path.join(BASE_DIR, "users.db")
+
 
 topic_names = {
     "1": "Ilk diniy tasavvurlar va ularning zamonaviy dinlarni rivojlantirishdagi ahamiyati",
@@ -51,22 +52,84 @@ topic_names = {
 }
 
 
-def load_users():
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+def get_connection():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def save_users(data):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+def init_db():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            phone TEXT,
+            full_name TEXT,
+            registered INTEGER DEFAULT 0,
+            step TEXT DEFAULT 'phone'
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 
-users = load_users()
+def get_user(user_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE user_id = ?", (str(user_id),))
+    user = cur.fetchone()
+    conn.close()
+    return user
+
+
+def create_or_reset_user(user_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO users (user_id, registered, step)
+        VALUES (?, 0, 'phone')
+        ON CONFLICT(user_id) DO UPDATE SET
+            registered = 0,
+            step = 'phone'
+    """, (str(user_id),))
+    conn.commit()
+    conn.close()
+
+
+def create_user_if_not_exists(user_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR IGNORE INTO users (user_id, registered, step)
+        VALUES (?, 0, 'phone')
+    """, (str(user_id),))
+    conn.commit()
+    conn.close()
+
+
+def update_user_phone(user_id, phone):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE users
+        SET phone = ?, step = 'fullname'
+        WHERE user_id = ?
+    """, (phone, str(user_id)))
+    conn.commit()
+    conn.close()
+
+
+def complete_registration(user_id, full_name):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE users
+        SET full_name = ?, registered = 1, step = 'done'
+        WHERE user_id = ?
+    """, (full_name, str(user_id)))
+    conn.commit()
+    conn.close()
 
 
 def is_valid_uzbek_phone(phone):
@@ -75,7 +138,8 @@ def is_valid_uzbek_phone(phone):
 
 
 def is_registered(user_id):
-    return str(user_id) in users and users[str(user_id)].get("registered") is True
+    user = get_user(user_id)
+    return user is not None and user["registered"] == 1
 
 
 def make_main_menu():
@@ -97,9 +161,7 @@ def make_phone_button():
 
 def make_dinshunoslik_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=4)
-    buttons = []
-    for i in range(1, 27):
-        buttons.append(types.KeyboardButton(str(i)))
+    buttons = [types.KeyboardButton(str(i)) for i in range(1, 27)]
     markup.add(*buttons)
     markup.add(types.KeyboardButton("⬅️ Orqaga"))
     return markup
@@ -136,24 +198,22 @@ def split_text(text, chunk_size=3500):
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     user_id = str(message.from_user.id)
+    user = get_user(user_id)
 
-    if is_registered(user_id):
+    if user and user["registered"] == 1:
         bot.send_message(
             message.chat.id,
-            f"Xush kelibsiz, {users[user_id]['full_name']}!\nKerakli bo‘limni tanlang:",
+            f"Xush kelibsiz, {user['full_name']}!\nKerakli bo‘limni tanlang:",
             reply_markup=make_main_menu()
         )
     else:
-        users[user_id] = {
-            "registered": False,
-            "step": "phone"
-        }
-        save_users(users)
-
+        create_or_reset_user(user_id)
         bot.send_message(
             message.chat.id,
             "🎓 Assalomu alaykum!\n\n"
-            "Ushbu bot orqali dinshunoslik fanidan mavzular va referatlarni olishingiz mumkin.\n\n"
+            "Ushbu bot orqali siz:\n\n"
+            "⚡ Qisqa vaqt ichida kerakli natijaga erishasiz\n"
+            "📚 Jurnaldagi raqamingiz asosida maxsus tayyorlangan referatni olasiz\n\n"
             "Botdan foydalanish uchun avval telefon raqamingizni yuboring.\n\n"
             "Format: +998XXXXXXXXX\n"
             "yoki pastdagi tugma orqali yuboring.",
@@ -164,20 +224,14 @@ def start_handler(message):
 @bot.message_handler(content_types=['contact'])
 def contact_handler(message):
     user_id = str(message.from_user.id)
-
-    if user_id not in users:
-        users[user_id] = {}
+    create_user_if_not_exists(user_id)
 
     phone = message.contact.phone_number
-
     if not phone.startswith("+"):
         phone = "+" + phone
 
     if is_valid_uzbek_phone(phone):
-        users[user_id]["phone"] = phone
-        users[user_id]["step"] = "fullname"
-        save_users(users)
-
+        update_user_phone(user_id, phone)
         bot.send_message(
             message.chat.id,
             "Telefon raqamingiz qabul qilindi ✅\n\n"
@@ -198,21 +252,32 @@ def show_users(message):
         bot.send_message(message.chat.id, "⛔ Siz admin emassiz!")
         return
 
-    if not users:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT user_id, full_name, phone
+        FROM users
+        WHERE registered = 1
+        ORDER BY rowid DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
         bot.send_message(message.chat.id, "📭 Hali hech kim ro‘yxatdan o‘tmagan.")
         return
 
     text = "📋 RO‘YXATDAN O‘TGAN FOYDALANUVCHILAR:\n\n"
     count = 0
 
-    for user_id, data in users.items():
-        full_name = data.get("full_name", "Noma'lum")
-        phone = data.get("phone", "Telefon yo‘q")
-
+    for row in rows:
         count += 1
+        full_name = row["full_name"] if row["full_name"] else "Noma'lum"
+        phone = row["phone"] if row["phone"] else "Telefon yo‘q"
+
         text += f"{count}) 👤 {full_name}\n"
         text += f"📱 {phone}\n"
-        text += f"🆔 {user_id}\n\n"
+        text += f"🆔 {row['user_id']}\n\n"
 
     text += f"📊 Jami foydalanuvchilar: {count} ta"
 
@@ -225,18 +290,16 @@ def text_handler(message):
     user_id = str(message.from_user.id)
     text = message.text.strip()
 
-    if user_id not in users:
-        users[user_id] = {"registered": False, "step": "phone"}
-        save_users(users)
+    user = get_user(user_id)
+
+    if not user:
+        create_user_if_not_exists(user_id)
         bot.send_message(message.chat.id, "Avval /start bosing.")
         return
 
-    if users[user_id].get("step") == "phone":
+    if user["step"] == "phone":
         if is_valid_uzbek_phone(text):
-            users[user_id]["phone"] = text
-            users[user_id]["step"] = "fullname"
-            save_users(users)
-
+            update_user_phone(user_id, text)
             bot.send_message(
                 message.chat.id,
                 "Telefon raqamingiz qabul qilindi ✅\n\n"
@@ -251,18 +314,16 @@ def text_handler(message):
             )
         return
 
-    if users[user_id].get("step") == "fullname":
+    if user["step"] == "fullname":
         if len(text.split()) >= 2:
-            users[user_id]["full_name"] = text
-            users[user_id]["registered"] = True
-            users[user_id]["step"] = "done"
-            save_users(users)
+            complete_registration(user_id, text)
+            user = get_user(user_id)
 
             bot.send_message(
                 message.chat.id,
                 f"Ro‘yxatdan o‘tdingiz ✅\n\n"
                 f"Familiya Ism: {text}\n"
-                f"Telefon: {users[user_id]['phone']}\n\n"
+                f"Telefon: {user['phone']}\n\n"
                 f"Endi kerakli bo‘limni tanlang:",
                 reply_markup=make_main_menu()
             )
@@ -286,7 +347,7 @@ def text_handler(message):
         )
         return
 
-    elif text == "Jismoniy tarbiya":
+    if text == "Jismoniy tarbiya":
         bot.send_message(
             message.chat.id,
             "Jismoniy tarbiya bo‘limi hozircha tayyorlanmoqda.",
@@ -294,7 +355,7 @@ def text_handler(message):
         )
         return
 
-    elif text == "Boshqalar":
+    if text == "Boshqalar":
         bot.send_message(
             message.chat.id,
             "Boshqa fanlar bo‘limi hozircha tayyorlanmoqda.",
@@ -302,7 +363,7 @@ def text_handler(message):
         )
         return
 
-    elif text == "⬅️ Orqaga":
+    if text == "⬅️ Orqaga":
         bot.send_message(
             message.chat.id,
             "Asosiy menyuga qaytdingiz.",
@@ -310,7 +371,7 @@ def text_handler(message):
         )
         return
 
-    elif text in topic_names:
+    if text in topic_names:
         topic_title = topic_names[text]
         topic_text = read_topic_file(text)
 
@@ -329,7 +390,6 @@ def text_handler(message):
         )
 
         parts = split_text(topic_text, chunk_size=3500)
-
         for i, part in enumerate(parts, start=1):
             bot.send_message(
                 message.chat.id,
@@ -337,12 +397,11 @@ def text_handler(message):
             )
         return
 
-    else:
-        bot.send_message(
-            message.chat.id,
-            "Iltimos, menyudagi tugmalardan foydalaning.",
-            reply_markup=make_main_menu()
-        )
+    bot.send_message(
+        message.chat.id,
+        "Iltimos, menyudagi tugmalardan foydalaning.",
+        reply_markup=make_main_menu()
+    )
 
 
 @app.route("/", methods=["GET"])
@@ -361,6 +420,7 @@ def webhook():
 
 
 if __name__ == "__main__":
+    init_db()
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     print("Webhook o‘rnatildi")
